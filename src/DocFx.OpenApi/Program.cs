@@ -1,4 +1,10 @@
-﻿using System.CommandLine;
+﻿// -----------------------------------------------------------------------
+// <copyright file="Program.cs" company="Altemiq">
+// Copyright (c) Altemiq. All rights reserved.
+// </copyright>
+// -----------------------------------------------------------------------
+
+using System.CommandLine;
 using Humanizer;
 using Microsoft.OpenApi;
 using Microsoft.OpenApi.Reader;
@@ -59,7 +65,7 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
 
     outputFolder.Create();
 
-    return await ConvertOpenApiSourceAsync();
+    return await ConvertOpenApiSourceAsync().ConfigureAwait(false);
 
     static DirectoryInfo? GetDirectoryInfo(FileSystemInfo source)
     {
@@ -76,7 +82,7 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
         switch (specSource)
         {
             case FileInfo { Exists: true } fileInfo:
-                return await ConvertOpenApiFileAsync(fileInfo);
+                return await ConvertOpenApiFileAsync(fileInfo).ConfigureAwait(false);
             case DirectoryInfo { Exists: true } directoryInfo:
             {
                 IEnumerable<string> openApiFileExtensions = ["*.json", "*.yaml", "*.yml"];
@@ -85,8 +91,7 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
                                  extension,
                                  new EnumerationOptions
                                  {
-                                     MatchCasing = MatchCasing.CaseInsensitive,
-                                     RecurseSubdirectories = true,
+                                     MatchCasing = MatchCasing.CaseInsensitive, RecurseSubdirectories = true,
                                  })))
                 {
                     if (await ConvertOpenApiFileAsync(fileInfo).ConfigureAwait(false) is not 0 and var returnValue)
@@ -97,6 +102,7 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
 
                 return 0;
             }
+
             default:
                 return 2;
         }
@@ -113,7 +119,7 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
 
         ReadResult result;
         var stream = input.OpenRead();
-        await using (stream)
+        await using (stream.ConfigureAwait(false))
         {
             var settings = new OpenApiReaderSettings();
             settings.AddYamlReader();
@@ -224,15 +230,11 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
                 .ConfigureAwait(false);
         }
 
-        var outputStream = File.Create(outputFile);
-        await using (outputStream)
+        var textWriter = new StreamWriter(File.Create(outputFile), leaveOpen: false);
+        await using (textWriter.ConfigureAwait(false))
         {
-            var textWriter = new StreamWriter(outputStream);
-            await using (textWriter)
-            {
-                var settings = new OpenApiJsonWriterSettings();
-                document.SerializeAsV2(new OpenApiJsonWriter(textWriter, settings));
-            }
+            var settings = new OpenApiJsonWriterSettings();
+            document.SerializeAsV2(new OpenApiJsonWriter(textWriter, settings));
         }
 
         return 0;
@@ -257,12 +259,14 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
         {
             return string.Join(string.Empty, SplitPathString(operationType, pathName, parameters));
 
-            static IEnumerable<string> SplitPathString(HttpMethod operationType, string path,
+            static IEnumerable<string> SplitPathString(
+                HttpMethod operationType,
+                string path,
                 IList<IOpenApiParameter>? parameters)
             {
                 yield return operationType.ToString().ToLowerInvariant();
 
-                var start = path.StartsWith("/api/", StringComparison.InvariantCultureIgnoreCase)
+                var start = path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase)
                     ? path[5..]
                     : path;
 
