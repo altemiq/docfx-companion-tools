@@ -2,9 +2,9 @@
 using Microsoft.OpenApi;
 using Microsoft.OpenApi.Reader;
 
-var specSourceOption = new Option<string>("-s", "--specsource")
-    { Description = "Folder or File containing the OpenAPI specification.", Required = true };
-var outputFolderOption = new Option<string>("-o", "--outputfolder")
+var specSourceOption = new Option<FileSystemInfo>("-s", "--specsource")
+    { Description = "Folder or File containing the OpenAPI specification.", Required = true }.AcceptExistingOnly();
+var outputFolderOption = new Option<DirectoryInfo>("-o", "--outputfolder")
     { Description = "Folder to write the resulting specifications in." };
 var verboseOption = new Option<bool>("-v", "--verbose") { Description = "Show verbose messages." };
 var generateOperationIdOption = new Option<bool>("-g", "--genOpId") { Description = "Generate missing OperationId members." };
@@ -19,97 +19,118 @@ var rootCommand = new RootCommand
 
 rootCommand.SetAction(async (parseResult, cancellationToken) =>
 {
-    string[] openApiFileExtensions = ["json", "yaml", "yml"];
-
     var specSource = parseResult.GetRequiredValue(specSourceOption);
-    var outputFolder = parseResult.GetValue(outputFolderOption) ?? specSource;
+    var outputFolder = parseResult.GetValue(outputFolderOption) ?? GetDirectoryInfo(specSource);
     var verbose = parseResult.GetValue(verboseOption);
     var generateOperationId = parseResult.GetValue(generateOperationIdOption);
 
     if (verbose)
     {
-        await parseResult.InvocationConfiguration.Output.WriteLineAsync($"Specification file/folder: {specSource}")
+        await parseResult.InvocationConfiguration.Output
+            .WriteLineAsync($"Specification file/folder: {specSource}")
             .ConfigureAwait(false);
-        await parseResult.InvocationConfiguration.Output.WriteLineAsync($"Output folder       : {outputFolder}");
-        await parseResult.InvocationConfiguration.Output.WriteLineAsync($"Verbose             : {verbose}");
-        await parseResult.InvocationConfiguration.Output.WriteLineAsync(
-            $"Generate OperationId Members: {generateOperationId}");
+        await parseResult.InvocationConfiguration.Output
+            .WriteLineAsync($"Output folder       : {outputFolder}")
+            .ConfigureAwait(false);
+        await parseResult.InvocationConfiguration.Output
+            .WriteLineAsync($"Verbose             : {verbose}")
+            .ConfigureAwait(false);
+        await parseResult.InvocationConfiguration.Output
+            .WriteLineAsync($"Generate OperationId Members: {generateOperationId}")
+            .ConfigureAwait(false);
     }
 
-    if (!Path.Exists(specSource))
+    if (!specSource.Exists)
     {
-        await parseResult.InvocationConfiguration.Error.WriteLineAsync(
-            $"ERROR: Specification folder/file '{specSource}' doesn't exist.");
+        await parseResult.InvocationConfiguration.Error
+            .WriteLineAsync($"ERROR: Specification folder/file '{specSource}' doesn't exist.")
+            .ConfigureAwait(false);
         return 1;
     }
 
-    Directory.CreateDirectory(outputFolder);
+    if (outputFolder is null)
+    {
+        await parseResult.InvocationConfiguration.Error
+            .WriteLineAsync("ERROR: Output folder is not specified.")
+            .ConfigureAwait(false);
+        return 1;
+    }
+
+    outputFolder.Create();
 
     return await ConvertOpenApiSourceAsync();
-    
+
+    static DirectoryInfo? GetDirectoryInfo(FileSystemInfo source)
+    {
+        return source switch
+        {
+            DirectoryInfo directory => directory,
+            FileInfo file => file.Directory,
+            _ => null,
+        };
+    }
+
     async Task<int> ConvertOpenApiSourceAsync()
     {
-        if (File.Exists(specSource))
+        switch (specSource)
         {
-            return await ConvertOpenApiFileAsync(specSource);
-        }
-
-        foreach (var extension in openApiFileExtensions)
-        {
-            if (await ConvertOpenApiExtensionAsync(extension) is not 0 and var returnValue)
+            case FileInfo { Exists: true } fileInfo:
+                return await ConvertOpenApiFileAsync(fileInfo);
+            case DirectoryInfo { Exists: true } directoryInfo:
             {
-                return returnValue;
-            }
-        }
+                IEnumerable<string> openApiFileExtensions = ["*.json", "*.yaml", "*.yml"];
+                foreach (var fileInfo in openApiFileExtensions
+                             .SelectMany(extension => directoryInfo.EnumerateFiles(
+                                 extension,
+                                 new EnumerationOptions
+                                 {
+                                     MatchCasing = MatchCasing.CaseInsensitive,
+                                     RecurseSubdirectories = true,
+                                 })))
+                {
+                    if (await ConvertOpenApiFileAsync(fileInfo).ConfigureAwait(false) is not 0 and var returnValue)
+                    {
+                        return returnValue;
+                    }
+                }
 
-        return 0;
-    }
-    
-    async Task<int> ConvertOpenApiExtensionAsync(string extension)
-    {
-        foreach (var file in Directory.GetFiles(
-                     specSource,
-                     $"*.{extension}",
-                     new EnumerationOptions
-                     {
-                         MatchCasing = MatchCasing.CaseInsensitive,
-                         RecurseSubdirectories = true,
-                     }))
-        {
-            if (await ConvertOpenApiFileAsync(file) is not 0 and var returnValue)
-            {
-                return returnValue;
+                return 0;
             }
+            default:
+                return 2;
         }
-
-        return 0;
     }
 
-    async Task<int> ConvertOpenApiFileAsync(string inputSpecFile)
+    async Task<int> ConvertOpenApiFileAsync(FileInfo input)
     {
         if (verbose)
         {
-            await parseResult.InvocationConfiguration.Output.WriteLineAsync($"Reading OpenAPI file '{inputSpecFile}'")
+            await parseResult.InvocationConfiguration.Output
+                .WriteLineAsync($"Reading OpenAPI file '{input}'")
                 .ConfigureAwait(false);
         }
 
         ReadResult result;
-        var stream = File.OpenRead(inputSpecFile);
+        var stream = input.OpenRead();
         await using (stream)
         {
             var settings = new OpenApiReaderSettings();
             settings.AddYamlReader();
 
-            result = await OpenApiDocument.LoadAsync(stream, settings: settings, cancellationToken: cancellationToken);
+            result = await OpenApiDocument
+                .LoadAsync(stream, settings: settings, cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
         }
 
         if (result.Diagnostic is { Errors: { Count: not 0 } errors })
         {
-            await parseResult.InvocationConfiguration.Error.WriteLineAsync("ERROR: Not a valid OpenAPI v2 or v3 specification")
+            await parseResult.InvocationConfiguration.Error
+                .WriteLineAsync("ERROR: Not a valid OpenAPI v2 or v3 specification")
                 .ConfigureAwait(false);
             foreach (var error in errors)
             {
-                await parseResult.InvocationConfiguration.Error.WriteLineAsync(error.ToString())
+                await parseResult.InvocationConfiguration.Error
+                    .WriteLineAsync(error.ToString())
                     .ConfigureAwait(false);
             }
 
@@ -120,20 +141,21 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
         {
             return 1;
         }
-        
+
         if (verbose)
         {
-            await parseResult.InvocationConfiguration.Output.WriteLineAsync($"Input OpenAPI version '{diagnostic.SpecificationVersion}'");
+            await parseResult.InvocationConfiguration.Output
+                .WriteLineAsync($"Input OpenAPI version '{diagnostic.SpecificationVersion}'")
+                .ConfigureAwait(false);
         }
 
         foreach (var (pathName, path) in document.Paths)
         {
             foreach (var (operationType, operation) in CreateNullSafe(path.Operations))
             {
-                if (generateOperationId && string.IsNullOrWhiteSpace(operation.OperationId))
+                if (generateOperationId)
                 {
-                    var operationId = GenerateOperationId(operationType, pathName, operation.Parameters);
-                    operation.OperationId = operationId;
+                    operation.OperationId ??= GenerateOperationId(operationType, pathName, operation.Parameters);
                 }
 
                 var description = $"{pathName} {operationType}";
@@ -142,8 +164,10 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
                 {
                     foreach (var (mediaType, content) in CreateNullSafe(response.Content))
                     {
-                        await CreateSingleExampleFromMultipleExamples(content,
-                            $"{description} response {responseType} {mediaType}");
+                        await CreateSingleExampleFromMultipleExamplesAsync(
+                                content,
+                                $"{description} response {responseType} {mediaType}")
+                            .ConfigureAwait(false);
                     }
                 }
 
@@ -151,14 +175,19 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
                 {
                     foreach (var (mediaType, content) in CreateNullSafe(parameter.Content))
                     {
-                        await CreateSingleExampleFromMultipleExamples(content,
-                            $"{description} parameter {parameter.Name} {mediaType}");
+                        await CreateSingleExampleFromMultipleExamplesAsync(
+                                content,
+                                $"{description} parameter {parameter.Name} {mediaType}")
+                            .ConfigureAwait(false);
                     }
                 }
 
                 foreach (var (mediaType, content) in CreateNullSafe(operation.RequestBody?.Content))
                 {
-                    await CreateSingleExampleFromMultipleExamples(content, $"{description} requestBody {mediaType}");
+                    await CreateSingleExampleFromMultipleExamplesAsync(
+                            content,
+                            $"{description} requestBody {mediaType}")
+                        .ConfigureAwait(false);
 
                     if (content is not OpenApiMediaType
                         {
@@ -167,11 +196,13 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
                     {
                         continue;
                     }
-                    
+
                     if (verbose)
                     {
-                        await parseResult.InvocationConfiguration.Output.WriteLineAsync(
-                            $"[OpenAPIv2 compatibility] Setting type example from sample requestBody example for {content.Schema?.Schema?.ToString() ?? "item"} from {operation.OperationId}");
+                        await parseResult.InvocationConfiguration.Output
+                            .WriteLineAsync(
+                                $"[OpenAPIv2 compatibility] Setting type example from sample requestBody example for {content.Schema?.Schema?.ToString() ?? "item"} from {operation.OperationId}")
+                            .ConfigureAwait(false);
                     }
 
                     schema.Example = example;
@@ -184,11 +215,12 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
             }
         }
 
-        var outputFileName = Path.ChangeExtension(Path.GetFileName(inputSpecFile), ".swagger.json");
-        var outputFile = Path.Combine(outputFolder, outputFileName);
+        var outputFile = Path.Combine(outputFolder.FullName, Path.ChangeExtension(input.Name, ".swagger.json"));
         if (verbose)
         {
-            await parseResult.InvocationConfiguration.Output.WriteLineAsync($"Writing output file '{outputFile}' as version '{OpenApiSpecVersion.OpenApi2_0}'");
+            await parseResult.InvocationConfiguration.Output
+                .WriteLineAsync($"Writing output file '{outputFile}' as version '{OpenApiSpecVersion.OpenApi2_0}'")
+                .ConfigureAwait(false);
         }
 
         var outputStream = File.Create(outputFile);
@@ -203,14 +235,17 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
         }
 
         return 0;
-        
-        async Task CreateSingleExampleFromMultipleExamples(IOpenApiMediaType content, string description)
+
+        async Task CreateSingleExampleFromMultipleExamplesAsync(IOpenApiMediaType content, string description)
         {
-            if (content is OpenApiMediaType { Example: null, Examples: { Count: not 0} examples } mediaType)
+            if (content is OpenApiMediaType { Example: null, Examples: { Count: not 0 } examples } mediaType)
             {
                 if (verbose)
                 {
-                    await parseResult.InvocationConfiguration.Output.WriteLineAsync($"[OpenAPIv2 compatibility] Setting example from first of multiple OpenAPIv3 examples for {description}");
+                    await parseResult.InvocationConfiguration.Output
+                        .WriteLineAsync(
+                            $"[OpenAPIv2 compatibility] Setting example from first of multiple OpenAPIv3 examples for {description}")
+                        .ConfigureAwait(false);
                 }
 
                 mediaType.Example = examples.Values.First().Value;
@@ -223,10 +258,13 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
 
             static string? ToPascalCase(string? value)
             {
-                return string.IsNullOrWhiteSpace(value) ? value : string.Concat(value[0].ToString().ToUpperInvariant(), value.AsSpan(1));
+                return string.IsNullOrWhiteSpace(value)
+                    ? value
+                    : string.Concat(value[0].ToString().ToUpperInvariant(), value.AsSpan(1));
             }
 
-            static IEnumerable<string> SplitPathString(HttpMethod operationType, string path, IList<IOpenApiParameter>? parameters)
+            static IEnumerable<string> SplitPathString(HttpMethod operationType, string path,
+                IList<IOpenApiParameter>? parameters)
             {
                 yield return operationType.ToString().ToLowerInvariant();
 
@@ -234,7 +272,9 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
                     ? path[5..]
                     : path;
 
-                foreach (var split in start.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                foreach (var split in start.Split(
+                             '/',
+                             StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
                 {
                     if (split.StartsWith('{'))
                     {
