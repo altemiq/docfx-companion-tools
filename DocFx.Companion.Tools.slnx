@@ -1,0 +1,5 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/DocFx.OpenApi/DocFx.OpenApi.csproj" />
+  </Folder>
+</Solution>
