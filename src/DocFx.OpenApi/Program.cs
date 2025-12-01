@@ -1,4 +1,5 @@
 ﻿using System.CommandLine;
+using Humanizer;
 using Microsoft.OpenApi;
 using Microsoft.OpenApi.Reader;
 
@@ -256,13 +257,6 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
         {
             return string.Join(string.Empty, SplitPathString(operationType, pathName, parameters));
 
-            static string? ToPascalCase(string? value)
-            {
-                return string.IsNullOrWhiteSpace(value)
-                    ? value
-                    : string.Concat(value[0].ToString().ToUpperInvariant(), value.AsSpan(1));
-            }
-
             static IEnumerable<string> SplitPathString(HttpMethod operationType, string path,
                 IList<IOpenApiParameter>? parameters)
             {
@@ -281,10 +275,7 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
                         break;
                     }
 
-                    if (ToPascalCase(split) is { } s)
-                    {
-                        yield return s;
-                    }
+                    yield return split.Pascalize();
                 }
 
                 if (parameters is null or { Count: 0 })
@@ -294,12 +285,11 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
 
                 yield return "By";
 
-                foreach (var parameter in parameters.Where(it => it.In == ParameterLocation.Path))
+                foreach (var parameter in parameters
+                             .Where(it => it is { In: ParameterLocation.Path, Name: not null })
+                             .Select(it => it.Name!.Pascalize()))
                 {
-                    if (ToPascalCase(parameter.Name) is { } s)
-                    {
-                        yield return s;
-                    }
+                    yield return parameter;
                 }
             }
         }
